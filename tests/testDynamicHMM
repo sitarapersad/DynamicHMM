@@ -1,0 +1,495 @@
+import unittest
+import numpy as np
+
+import sys
+
+# Add the path to the dynamicHMM module to the system path
+sys.path.append('../')
+
+try:
+    from hmm import DynamicHMM
+except ImportError:
+    from dynamicHMM import DynamicHMM
+
+from pomegranate.distributions import Categorical
+
+
+# class TestDynamicHMM(unittest.TestCase):
+#     pass
+#
+# class TestNonUniformStarts(unittest.TestCase):
+#     pass
+#
+# class TestNonUniformEnds(unittest.TestCase):
+#     pass
+#
+# class TestNonNormalizedTransitions(unittest.TestCase):
+#     pass
+#
+# class TestMultipleObservations(unittest.TestCase):
+#     pass
+
+
+class TestDynamicHMM(unittest.TestCase):
+    """
+    Test cases for the DynamicHMM class.
+    """
+
+    def setUp(self):
+        # Set up a simple HMM with 2 hidden states and 3 possible observations
+        # The transition matrix is non-stationary, so the probabilities change over time
+        # Construct a simple binary output HMM
+        d1 = Categorical([[0.2, 0.8]])
+        d2 = Categorical([[0.8, 0.2]])
+
+        T = np.array(
+            [[[0.5, 0.5],
+              [0.4, 0.6]],
+             [[0.3, 0.7],
+              [0.6, 0.4]]]
+        )
+
+        self.uniform_start_hmm = DynamicHMM(3, distributions=[d1, d2], edges=T)
+        self.non_uniform_start_hmm = DynamicHMM(3, distributions=[d1, d2], edges=T, starts=[0.1, 0.9])
+        self.non_uniform_ends_hmm = DynamicHMM(3, distributions=[d1, d2], edges=T, ends=[0, 0.1])
+
+        T_non_normalized = np.array(
+            [[[0.1, 0.1],
+              [0.4, 0.6]],
+             [[0.3, 0.7],
+              [0.6, 0.4]]]
+        )
+
+        self.non_normalized_transitions_hmm = DynamicHMM(3, distributions=[d1, d2], edges=T_non_normalized)
+
+    def test_forward_algorithm_single_observation(self):
+        expected_matrix = np.array([[[0.1, 0.40000001],
+                                     [0.168, 0.058],
+                                     [0.01704, 0.11264]]])
+        expected_lp = np.array([0.12968])
+
+        X = np.array([[[0],
+                       [1],
+                       [0]]])
+        f, lp = self.uniform_start_hmm.forward(X)
+        actual_matrix = np.exp(f)
+        actual_lp = np.exp(lp)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_forward_algorithm_multiple_observations(self):
+        expected_matrix = np.array([[[0.1, 0.40000001],
+                                     [0.168, 0.058],
+                                     [0.01704, 0.11264]],
+                                    [[0.40000001, 0.1],
+                                     [0.048, 0.208],
+                                     [0.11136, 0.02336]]])
+        expected_lp = np.array([0.12968, 0.13472])
+        X = np.array([[[0],
+                       [1],
+                       [0]],
+                      [[1],
+                       [0],
+                       [1]]])
+        f, lp = self.uniform_start_hmm.forward(X)
+        actual_matrix = np.exp(f)
+        actual_lp = np.exp(lp)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_forward_algorithm_non_uniform_starts(self):
+        expected_matrix = np.array([[0.08, 0.18],
+                                    [0.0224, 0.1184],
+                                    [0.062208, 0.012608]])
+
+        expected_lp = np.array([-2.5927])
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+        f, actual_lp = self.non_uniform_start_hmm.forward(X)
+        actual_matrix = np.exp(f)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_forward_algorithm_non_uniform_ends(self):
+        expected_matrix = np.array([[0.40000001, 0.1],
+                                    [0.048, 0.208],
+                                    [0.11136, 0.02336]])
+        expected_lp = np.array([-3.7567])
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+        b, actual_lp = self.non_uniform_ends_hmm.forward(X)
+        actual_matrix = np.exp(b)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_forward_algorithm_non_normalized_transitions(self):
+        """
+        Test the forward algorithm by computing the full forward matrix of a single observation sequence of length 3
+        This test case specifically checks for situations where a non-normalized transition matrix is input, and ensures
+        that it is correctly normalized during the forward algorithm.
+        """
+
+        expected_matrix = np.array([[[0.1, 0.40000001],
+                                     [0.168, 0.058],
+                                     [0.01704, 0.11264]]])
+        expected_lp = np.array([0.12968])
+
+        X = np.array([[[0],
+                       [1],
+                       [0]]])
+        f, lp = self.non_normalized_transitions_hmm.forward(X)
+        actual_matrix = np.exp(f)
+        actual_lp = np.exp(lp)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_backward_algorithm_single_observation(self):
+        """
+        Test the backward algorithm by computing the full backward matrix of a single observation sequence of length 3
+        The recursive formula for the backward algorithm is:
+        beta_{t}(i) = sum_{j=1}^{N} T[t]_{ij} e_{j}(x_{t+1}) beta_{t+1}(j)
+        where
+            N is the number of hidden states,
+            T[t]_{ij} is the transition probability from state i at time t to state j at time t+1,
+            e_{j}(x_{t+1}) is the probability of observing x_{t+1} given that the hidden state is j, and
+            beta_{t+1}(j) is the probability of observing the sequence x_{t+2}, x_{t+2}, ..., x_{T} given that the
+            hidden state at time t+1 is j
+        The initial condition is beta_{T}(i) = end_distribution[i] for all i. This is generally set to 1 for all i.
+        """
+
+        expected_matrix = np.array([[[0.292, 0.2512],
+                                     [0.62, 0.44],
+                                     [1, 1]]])
+        expected_lp = np.array([0.12968])
+
+        X = np.array([[[0],
+                       [1],
+                       [0]]])
+        b, lp = self.uniform_start_hmm.backward(X)
+        actual_matrix = np.exp(b)
+        actual_lp = np.exp(lp)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_backward_algorithm_non_uniform_starts(self):
+        expected_matrix = np.array([[[0.262, 0.2992],
+                                     [0.38, 0.56],
+                                     [1, 1]]])
+        expected_lp = np.array([-2.5927])
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+        b, actual_lp = self.non_uniform_start_hmm.backward(X)
+        actual_matrix = np.exp(b)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_backward_algorithm_non_uniform_ends(self):
+        expected_matrix = np.array([[0.046, 0.0496],
+                                    [0.14, 0.08],
+                                    [0., 1.]])
+        expected_lp = np.array([-3.7567])
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+        b, actual_lp = self.non_uniform_ends_hmm.backward(X)
+        actual_matrix = np.exp(b)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_backward_algorithm_non_normalized_transitions(self):
+        """
+        Test the backward algorithm by computing the full backward matrix of a single observation sequence of length 3
+        This test case specifically checks for situations where a non-normalized transition matrix is input, and ensures
+        that it is correctly normalized during the backward algorithm.
+        """
+        expected_matrix = np.array([[[0.292, 0.2512],
+                                     [0.62, 0.44],
+                                     [1, 1]]])
+        expected_lp = np.array([0.12968])
+
+        X = np.array([[[0],
+                       [1],
+                       [0]]])
+        b, lp = self.non_normalized_transitions_hmm.backward(X)
+
+        actual_matrix = np.exp(b)
+        actual_lp = np.exp(lp)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_backward_algorithm_multiple_observations(self):
+        """
+
+        """
+
+        expected_matrix = np.array([[[0.292, 0.2512],
+                                     [0.62, 0.44],
+                                     [1, 1]],
+                                    [[0.262, 0.2992],
+                                     [0.38, 0.56],
+                                     [1, 1]]])
+        expected_lp = np.array([0.12968, 0.13472])
+
+        X = np.array([[[0],
+                       [1],
+                       [0]],
+                      [[1],
+                       [0],
+                       [1]]])
+        b, lp = self.uniform_start_hmm.backward(X)
+        actual_matrix = np.exp(b)
+        actual_lp = np.exp(lp)
+
+        self.assertTrue(np.allclose(actual_matrix, expected_matrix))
+        self.assertTrue(np.allclose(actual_lp, expected_lp))
+
+    def test_viterbi_algorithm_multiple_observations(self):
+        # Test the Viterbi algorithm by computing the most likely hidden state sequence and full Viterbi matrix of a
+        # single observation sequence of length 3
+
+        expected_matrix = np.array([[[0.4000, 0.1000],
+                                     [0.0400, 0.1600],
+                                     [0.0768, 0.0128]],
+                                    [[0.4000, 0.1000],
+                                     [0.1600, 0.0400],
+                                     [0.0384, 0.0224]]])
+        expected_logprob = [np.log(0.0768), np.log(0.0384)]
+        expected_path = [[0, 1, 0], [0, 0, 0]]
+
+        X = np.array([[[1],
+                       [0],
+                       [1]],
+                      [[1],
+                       [1],
+                       [1]]])
+        logprob, path, matrix = self.uniform_start_hmm.viterbi(X)
+        matrix = np.exp(matrix)
+
+        self.assertTrue(np.allclose(matrix, expected_matrix))
+        self.assertTrue(np.allclose(logprob, expected_logprob))
+        self.assertTrue(np.allclose(path, expected_path))
+
+    def test_viterbi_algorithm_single_observation(self):
+        # Test the Viterbi algorithm by computing the most likely hidden state sequence and full Viterbi matrix of a
+        # single observation sequence of length 3
+
+        expected_matrix = np.array([[[0.4000, 0.1000],
+                                     [0.0400, 0.1600],
+                                     [0.0768, 0.0128]]])
+        expected_logprob = [np.log(0.0768)]
+        expected_path = [0, 1, 0]
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+        logprob, path, matrix = self.uniform_start_hmm.viterbi(X)
+        matrix = np.exp(matrix)
+        self.assertTrue(np.allclose(matrix, expected_matrix))
+        self.assertTrue(np.allclose(logprob, expected_logprob))
+        self.assertTrue(np.allclose(path, expected_path))
+
+    def test_viterbi_algorithm_non_uniform_starts(self):
+        pass
+
+    def test_viterbi_algorithm_non_uniform_ends(self):
+        pass
+
+    def test_viterbi_algorithm_non_normalized_transitions(self):
+        """
+        Test the Viterbi algorithm by computing the most likely hidden state sequence and full Viterbi matrix of a
+        single observation sequence of length 3
+        This test case specifically checks for situations where a non-normalized transition matrix is input, and ensures
+        that it is correctly normalized during the Viterbi algorithm.
+        """
+
+        expected_matrix = np.array([[[0.4000, 0.1000],
+                                     [0.0400, 0.1600],
+                                     [0.0768, 0.0128]]])
+        expected_logprob = [np.log(0.0768)]
+        expected_path = [0, 1, 0]
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+        logprob, path, matrix = self.non_normalized_transitions_hmm.viterbi(X)
+        matrix = np.exp(matrix)
+        self.assertTrue(np.allclose(matrix, expected_matrix))
+        self.assertTrue(np.allclose(logprob, expected_logprob))
+        self.assertTrue(np.allclose(path, expected_path))
+
+    def test_forward_backward_algorithm_single_observation(self):
+        """
+        Test the forward-backward algorithm by computing the full forward and backward matrices of a single observation
+        sequence of length 3. This test case checks that the posterior probabilities and transitions are correctly computed
+        in the case of a single observation sequence.
+        :return:
+        """
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+
+        t, gamma, starts, ends, logp = self.uniform_start_hmm.forward_backward(X)
+
+        expected_t = np.array([[[0.1128266, 0.66508314],
+                                [0.02256532, 0.19952494]],
+
+                               [[0.08551069, 0.04988124],
+                                [0.74109264, 0.12351544]]])
+
+        expected_gamma = np.log(np.array([[0.77790974, 0.22209026],
+                                          [0.13539192, 0.86460808],
+                                          [0.82660333, 0.17339667]]))
+        expected_starts = np.array([[0.7779, 0.2221]])
+
+        expected_ends = np.array([[1, 1]])
+        expected_logp = np.log([-2.0046])
+
+        self.assertTrue(np.allclose(t, expected_t))
+        self.assertTrue(np.allclose(gamma, expected_gamma))
+        self.assertTrue(np.allclose(starts, expected_starts))
+        self.assertTrue(np.allclose(ends, expected_ends))
+        self.assertTrue(np.allclose(logp, expected_logp))
+
+    def test_forward_backward_algorithm_multiple_observations(self):
+        """
+        Test the forward-backward algorithm on multiple observations.
+        """
+        X = np.array([[[1],
+                       [0],
+                       [1]],
+                      [[0],
+                       [1],
+                       [0]]])
+
+        expected_t = np.array([[[[0.1128266, 0.66508314],
+                                 [0.02256532, 0.19952494]],
+
+                                [[0.08551069, 0.04988124],
+                                 [0.74109264, 0.12351544]]],
+
+                               [[[0.1912399530, 0.0339296684],
+                                 [0.6119678617, 0.1628624052]],
+
+                                [[0.0777297616, 0.7254779935],
+                                 [0.0536705814, 0.1431215107]]]
+                               ])
+        expected_gamma = np.log([[[0.77790974, 0.22209026],
+                                  [0.13539192, 0.86460808],
+                                  [0.82660333, 0.17339667]],
+                                 [[0.22516963, 0.77483034],
+                                  [0.8032079, 0.1967921],
+                                  [0.13140039, 0.86859965]]]
+                                )
+
+        expected_starts = np.array([[0.7779096365, 0.2220902741], [0.22516963, 0.77483034]])
+        expected_ends = np.array([[1, 1], [1, 1]])
+        expected_logp = np.array([-2.0045566559, -2.0426855087])
+
+        t, gamma, starts, ends, logp = self.uniform_start_hmm.forward_backward(X)
+
+        self.assertTrue(np.allclose(t, expected_t))
+        self.assertTrue(np.allclose(gamma, expected_gamma))
+        self.assertTrue(np.allclose(starts, expected_starts))
+        self.assertTrue(np.allclose(ends, expected_ends))
+        self.assertTrue(np.allclose(logp, expected_logp))
+
+    def test_forward_backward_algorithm_non_uniform_starts(self):
+        """
+        Test the forward-backward algorithm with non-uniform start probabilities.
+        :return:
+        """
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+
+        t, gamma, starts, ends, logp = self.non_uniform_start_hmm.forward_backward(X)
+
+        expected_t = np.array([[[0.04063302, 0.23952096],
+                                [0.07313944, 0.64670659]],
+
+                               [[0.07185629, 0.04191617],
+                                [0.75962361, 0.12660393]]])
+
+        expected_gamma = np.log([[0.28015398, 0.71984602],
+                                 [0.11377246, 0.88622754],
+                                 [0.8314799, 0.1685201]])
+
+        expected_starts = np.array([[0.28015398, 0.71984602]])
+
+        expected_ends = np.array([[1, 1]])
+        expected_logp = np.array([-2.5927])
+
+        self.assertTrue(np.allclose(t, expected_t))
+        self.assertTrue(np.allclose(gamma, expected_gamma))
+        self.assertTrue(np.allclose(starts, expected_starts))
+        self.assertTrue(np.allclose(ends, expected_ends))
+        self.assertTrue(np.allclose(logp, expected_logp))
+
+    def test_forward_backward_algorithm_non_uniform_ends(self):
+        """
+        Test the forward-backward algorithm with non-uniform end probabilities.
+        :return:
+        """
+
+        X = np.array([[[1],
+                       [0],
+                       [1]]])
+
+        t, gamma, starts, ends, logp = self.non_uniform_ends_hmm.forward_backward(X)
+
+        f, flp_ = self.non_uniform_ends_hmm.forward(X)
+        b, _ = self.non_uniform_ends_hmm.backward(X)
+
+        expected_t = np.array([[[0.08883249, 0.20304569],
+                                [0.15989848, 0.54822335]],
+
+                               [[0., 0.24873096],
+                                [0., 0.75126904]]])
+
+        print(t)
+        print(np.exp(f))
+        print(np.exp(gamma))
+        expected_gamma = np.log(np.array([[0.29187817, 0.70812183],
+                                          [0.24873096, 0.75126904],
+                                          [0., 1.]]))
+
+        expected_starts = np.array([[0.29187817, 0.70812183]])
+
+        expected_ends = np.array([[1, 1]])
+        expected_logp = np.array([-4.373423745866614])
+
+        # self.assertTrue(np.allclose(t, expected_t))
+        self.assertTrue(np.allclose(gamma, expected_gamma))
+        self.assertTrue(np.allclose(starts, expected_starts))
+        self.assertTrue(np.allclose(ends, expected_ends))
+        self.assertTrue(np.allclose(logp, expected_logp))
+
+    def test_forward_backward_algorithm_non_normalized_transitions(self):
+        pass
+
+    # DO this for a single observation
+    # Do this for >1 observation
+    # Do with the normalized and non-normalized transition matrices
+    # Do with uniform and non-uniform start and end probabilities
+
+
+if __name__ == '__main__':
+    unittest.main()
